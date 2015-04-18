@@ -1,0 +1,77 @@
+#!/usr/bin/env ruby
+
+# Make sure to run:
+#  $ [sudo] apt-get install build-essential zlib1g-dev libpcre3 libpcre3-dev unzip ruby
+# and
+#  $ [sudo] gem install -V json
+# before running this.
+
+require "json"
+require "rbconfig"
+require "fileutils"
+
+NPS_VERSION="1.9.32.3"
+
+unless File.exist? "psol-linux"
+	`curl "https://dl.google.com/dl/page-speed/psol/#{NPS_VERSION}.tar.gz" -o "#{NPS_VERSION}.tar.gz" -L --compressed`
+	`tar -xzvf "#{NPS_VERSION}.tar.gz"` # extracts to psol/
+	`mv psol/lib/Release/linux psol-linux`
+	`rm -rf psol`
+	`rm "#{NPS_VERSION}.tar.gz"`
+end
+
+`curl https://cdnjs.com/packages.json -z packages.json -o packages.json -L --compressed`
+
+parsed = File.open("packages.json", "r") {|file| JSON.parse(file.read) }
+
+arch = case RbConfig::CONFIG["host_cpu"]
+	when "x86_64" then "x64"
+	else "ia32"
+	end
+
+conf = File.open("pagespeed_libraries_cdnjs.conf", "w")
+modconf = File.open("modpagespeed_libraries_cdnjs.conf", "w")
+
+conf.write %{# NOTE: This configuration is automatically generated.  It will be kept up to
+# date each time you generate it.  Add additional pagespeed Library entries to
+# pagespeed.conf rather than including them here.  Only edit this file if you
+# wish to modify or disable the default entries.  To disable all entries simply
+# disable canonicalize_javascript_libraries in pagespeed.conf.
+}
+
+modconf.write %{# NOTE: This configuration is automatically generated.  It will be kept up to
+# date each time you generate it.  Add additional ModpagespeedLibrary entries
+# to pagespeed.conf rather than including them here.  Only edit this file if
+# you wish to modify or disable the default entries.  To disable all entries
+# simply disable canonicalize_javascript_libraries in pagespeed.conf.
+}
+modconf.write "<IfModule pagespeed_module>\n"
+
+parsed["packages"].each do |package|
+	package["assets"].each do |asset|
+		asset["files"].each do |file|
+			if file["name"][-3..-1] == ".js"
+				url = "//cdnjs.cloudflare.com/ajax/libs/#{package["name"]}/#{asset["version"]}/#{file["name"]}"
+				path = "packages/#{package["name"]}/#{asset["version"]}/#{file["name"]}"
+				
+				puts "#{path}"
+				
+				FileUtils.mkdir_p File.dirname path
+				
+				`curl "http:#{url}" -z "#{path}" -o "#{path}" -L --compressed`
+				
+				size_and_hash = %x{psol-linux/#{arch}/pagespeed_js_minify --print_size_and_hash "#{path}"}
+				
+				conf.write "pagespeed Library #{size_and_hash} #{url};\n"
+				modconf.write "\tModPagespeedLibrary #{size_and_hash} #{url}\n"
+				
+				puts ""
+			end
+		end
+	end
+end
+
+modconf.write "</IfModule>"
+
+conf.close
+modconf.close
